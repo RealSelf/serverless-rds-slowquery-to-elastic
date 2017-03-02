@@ -1,0 +1,108 @@
+# This function checks copies a RDS MySQL/MariaDB slow_query
+#   table into ElasticSearch
+# It also Drops some counters into CloudWatch, because we're cool 
+#   that way ( if CW_SLOWQUERY ) is set
+#
+service: mysqlslowquerylog
+
+provider:
+  name: aws
+  runtime: python2.7
+# you can overwrite defaults here
+  stage: test
+  region: us-west-2
+  timeout: 60
+# Prod VPC values
+  vpc:
+    securityGroupIds:
+      - { "Ref" : "LambdaSG" }
+    subnetIds:
+      - "${opt:subnet1}"
+      - "${opt:subnet2}"
+
+# you can add statements to the Lambda function's IAM Role here
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - "cloudwatch:PutMetricData"
+      Resource: "*"
+    - Effect: "Allow"
+      Action:
+        - "ec2:CreateNetworkInterface"
+        - "ec2:DescribeNetworkInterfaces"
+        - "ec2:DeleteNetworkInterface"
+      Resource: "*"
+
+
+# you can define service wide environment variables here
+  environment:
+    SECRET_FILE: ${env:SECRET_FILE}
+    ELASTICSEARCH_URL: ${env:ELASTICSEARCH_URL}
+
+# you can add packaging information here
+package:
+  include:
+    - vendored/**
+
+functions:
+  slowquery:
+    handler: slowquery.es_and_cloudwatch
+    events:
+      - schedule: rate(5 minutes)
+        enabled: true
+
+
+# you can add CloudFormation resource templates here
+resources:
+  Resources:
+    LambdaSG:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: "lambda-slowquery.${opt:stage}"
+        VpcId: "${opt:vpc}"
+    KMSKey:
+      Type: AWS::KMS::Key
+      Properties:
+        Description: "A Key for Decrypting the mysql secrets file"
+        KeyPolicy:
+          Version: "2012-10-17"
+          Id: "DefaultKmsPolicy"
+          Statement:
+            - 
+              Sid: "Enable Key Administration"
+              Effect: "Allow"
+              Principal:
+                AWS: { "Fn::Join" : [ ":", [ "arn:aws:iam:", { "Ref" : "AWS::AccountId" }, "root" ] ] }
+              Action: "kms:*"
+              Resource: "*"
+            - 
+              Sid: "Enable Key Use"
+              Effect: "Allow"
+              Principal:
+                AWS: { "Fn::GetAtt": [ "IamRoleLambdaExecution", "Arn" ] }
+              Action: 
+                - "kms:Encrypt"
+                - "kms:Decrypt"
+                - "kms:ReEncrypt*"
+                - "kms:GenerateDataKey*"
+                - "kms:DescribeKey"
+              Resource: "*"
+    KMSAlias:
+      Type: AWS::KMS::Alias
+      Properties:
+        AliasName: "alias/lambda-mysql-slowquerylog-${opt:stage}"
+        TargetKeyId: { "Ref" : "KMSKey" }
+    SlowqueryLambdaFunction:
+      Type: "AWS::Lambda::Function"
+      DependsOn:
+        - IamRoleLambdaExecution
+        - IamPolicyLambdaExecution
+
+
+  Outputs:
+     KMSKey:
+       Description: "The KMS Key Id"
+       Value: { "Ref": "KMSKey" }
+     SecurityGroup:
+       Description: "The SG assumed by this lambda"
+       Value: { "Ref": "LambdaSG" }

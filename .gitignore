@@ -1,3 +1,7 @@
+# serverless
+.serverless/
+vendored/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
