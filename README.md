@@ -12,10 +12,12 @@ It runs inside a VPC, so you'll need to know a little bit about your VPC, like s
 1. First you must setup a user in mysql:
 
     ```
+
 GRANT SELECT ON mysql.slow_log to `username`@`%` IDENTIFIED BY 'supersecretpassword'; 
 GRANT SELECT ON mysql.slow_log_backup to `username`@`%`;
 GRANT EXECUTE ON PROCEDURE mysql.rds_rotate_slow_log to `username`@`%`;
 FLUSH PRIVILEGES
+
     ```
 
 2. Now create a secrets file in json format, and encrypt it.
