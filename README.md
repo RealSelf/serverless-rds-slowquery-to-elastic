@@ -1,5 +1,10 @@
 # What is this
-This lambda queries the mysql.slow_log table for the entries of the last 6 minutes, then drops them into elasticsearch
+This lambda copies a table backed RDS mysql slow query log into Elasticsearch.
+
+It does so by:
+     1. Calling a stored procedure in RDS to copy the current slow_log table to slow_log_backup ( called mysql.rds_rotate_slow_log )
+     2. Querying mysql.slow_log_backup
+     3. Dumping all of that into Elasticsearch
 
 It runs inside a VPC, so you'll need to know a little bit about your VPC, like subnet-ids and vpc-ids 
 
@@ -8,6 +13,8 @@ It runs inside a VPC, so you'll need to know a little bit about your VPC, like s
 
     ```
 GRANT SELECT ON mysql.slow_log to `username`@`%` IDENTIFIED BY 'supersecretpassword'; 
+GRANT SELECT ON mysql.slow_log_backup to `username`@`%`;
+GRANT EXECUTE ON PROCEDURE mysql.rds_rotate_slow_log to `username`@`%`;
 FLUSH PRIVILEGES
     ```
 
@@ -38,7 +45,7 @@ aws kms encrypt --key-id alias/lambda-mysql-slowquerylog-prod --plaintext fileb:
 ELASTICSEARCH_URL=http://elasticsearch.example.com:9200  SECRET_FILE="./prod.txt" serverless deploy --stage prod --vpc  vpc-XXXXX  --subnet1 subnet-AAAAAA --subnet2 subnet-BBBBB
     ```
 
-## What? 
+## More info?
 * Logs are in CloudWatchLogs
 * The ES indices are named `slowquery-YYYY.mm.dd`
 * The _type of the document is `database.example.com`
