@@ -31,7 +31,7 @@ FLUSH PRIVILEGES;
 }
 ```
 
-    1. KMS encrypt that . There's a 🐔/🥚 thing here. you must `serverless deploy` once to create the KMS key and alias
+1. KMS encrypt that . There's a 🐔/🥚 thing here. you must `serverless deploy` once to create the KMS key and alias
 
 ```
 aws kms encrypt --key-id alias/lambda-mysql-slowquerylog-prod --plaintext fileb:///path/to/secret.txt > prod.txt
