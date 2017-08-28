@@ -23,6 +23,8 @@ def parse_config(file=None):
     with open(file) as data_file:
         ciphertext = json.load(data_file)['CiphertextBlob']
     decrypted_text = _kms_decrypt(cipher_text=ciphertext)
+    logger.debug("decrypted config is")
+    logger.debug(decrypted_text)
     return json.loads(decrypted_text)
 
 def _kms_decrypt(cipher_text=None):
@@ -57,6 +59,8 @@ class JSONSerializerES(elasticsearch.serializer.JSONSerializer):
         except (ValueError, TypeError) as e:
             raise elasticsearch.exceptions.SerializationError(data, e)
 
+
+
 # http://docs.aws.amazon.com/lambda/latest/dg/vpc-rds-deployment-pkg.html
 # :point_up: connect() outside of the handler for performance.
 #  I'm totally cargoculting that
@@ -82,42 +86,57 @@ if os.environ.get('ELASTICSEARCH_URL'):
     except:
         raise
 
+# 
+# Separating out purging the slowquery log, from dropping things into ES 
+# because we might end up recalling the "insert into ES" function on error
+# from SNS or something if it fails. 
+#
+def purge_slowquery(cursor=None):
+    """ Purge before dropping events into ES. """
+    purge_sql = "CALL mysql.rds_rotate_slow_log;"
+    cursor.execute(purge_sql)
+    purge_res = cursor.fetchall()
+    return True
 
-def es_and_cloudwatch(event, context):
+
+def lambda_entry(event, context):
+    """ An entry point for lambda, does nothing but call other functions, and inits the cursor"""
     with conn.cursor() as cursor:
-        # "SELECT * FROM slow_query_log ORDER "
-        cols = [ 'start_time', 'user_host', 'query_time', 'lock_time', 'rows_sent', 'rows_examined', 'db', 'last_insert_id', 'insert_id', 'server_id', 'sql_text', 'thread_id', 'start_time_epoch_seconds' ]
-        ####
-        ####
-        sql = "SELECT start_time, user_host, query_time, lock_time, rows_sent, rows_examined, db, last_insert_id, insert_id, server_id, sql_text, thread_id, UNIX_TIMESTAMP(start_time) AS epoch_seconds FROM slow_log WHERE start_time >= DATE_SUB(NOW(), INTERVAL 6 MINUTE) ORDER BY epoch_seconds"
-        ####
-        ####
-        cursor.execute(sql)
-        res = cursor.fetchall()
+        purge_slowquery(cursor=cursor)
+        inserted_to_es = es_and_cloudwatch(cursor=cursor)
+    return {'status': 200, "inserted_rows_to_elastic": inserted_to_es}
 
-        counter = 0
-        for row in res:
-            if (counter % 50) == 0:
-                 logger.info("Processed %i rows from mysql" % (counter))
-            if es:
-                 doc = dict(zip(cols, row))
-                 tmpid = hashlib.md5()
-                 tmpid.update("%s" % (doc['start_time_epoch_seconds']))
-                 tmpid.update(doc['sql_text'])
-                 tmpid.update("%s" % (doc['thread_id']))
-                 date_index_name = doc['start_time'].strftime('slowquery-%Y.%m.%d')
-                 try:
-                     esres = es.index(index=date_index_name,
-                                      doc_type=config_data['db_host'],
-                                      id=tmpid.hexdigest(),
-                                      body=doc)
-                 except Exception as e:
-                     logger.warning("FAILURE Indexing in Elasticsearch, %s" % (e))
-                 if esres['_shards']['failed'] > 0:
-                     logger.warning("FAILURE TO LOG TO ELASTICSEARCH")
-                     logger.warning(json.dumps(doc))
-                     logger.warning(json.dumps(esres))
-            else:
-                logger.info(json.dumps(row, default=json_datetime_serial))
-            counter += 1
-        return {'status': 'ended'}
+def es_and_cloudwatch(cursor=None):
+    cols = [ 'start_time', 'user_host', 'query_time', 'lock_time', 'rows_sent', 'rows_examined', 'db', 'last_insert_id', 'insert_id', 'server_id', 'sql_text', 'thread_id', 'start_time_epoch_seconds' ]
+    ####
+    sql = "SELECT start_time, user_host, query_time, lock_time, rows_sent, rows_examined, db, last_insert_id, insert_id, server_id, sql_text, thread_id, UNIX_TIMESTAMP(start_time) AS epoch_seconds FROM slow_log_backup"
+    ####
+    cursor.execute(sql)
+    res = cursor.fetchall()
+
+    counter = 0
+    for row in res:
+        if (counter % 50) == 0:
+             logger.info("Processed %i rows from mysql" % (counter))
+        if es:
+            doc = dict(zip(cols, row))
+            tmpid = hashlib.md5()
+            tmpid.update("%s" % (doc['start_time_epoch_seconds']))
+            tmpid.update(doc['sql_text'])
+            tmpid.update("%s" % (doc['thread_id']))
+            date_index_name = doc['start_time'].strftime('slowquery-%Y.%m.%d')
+            try:
+                esres = es.index(index=date_index_name,
+                                 doc_type=config_data['db_host'],
+                                 id=tmpid.hexdigest(),
+                                 body=doc)
+            except Exception as e:
+                logger.warning("FAILURE Indexing in Elasticsearch, %s" % (e))
+            if esres['_shards']['failed'] > 0:
+                logger.warning("FAILURE TO LOG TO ELASTICSEARCH")
+                logger.warning(json.dumps(doc))
+                logger.warning(json.dumps(esres))
+        else:
+            logger.info(json.dumps(row, default=json_datetime_serial))
+        counter += 1
+    return counter
